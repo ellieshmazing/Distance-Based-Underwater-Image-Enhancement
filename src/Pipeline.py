@@ -1,9 +1,53 @@
 import os
 import sys
 import cv2 as cv
+import math
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import signal
+from skimage import color, filters, transform
+
+'''***********************************NORMALIZATION FUNCTIONS****************************************'''
+def normalizeSingleChannelFull(inputImg):
+    #Extract image size information
+    inputHeight, inputWidth = inputImg.shape[:2]
+    
+    #Declare variables to hold max and min of each channel
+    max = 0
+    min = 1
+    
+    #Iterate through image to find max
+    for y in range(inputHeight):
+        for x in range(inputWidth):
+            #Store pixel to avoid multiple array accesses
+            pixel = inputImg[y][x]
+        
+            #Check if pixel intensity is greater than max
+            if (pixel > max):
+                max = pixel
+                
+            #Check if pixel intensity is less than min
+            if (pixel < min):
+                min = pixel
+                
+    #Declare array to hold output image
+    outputImg = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    
+    #Calculate range
+    rangePix = max-min
+                
+    #Iterate through image and normalize intensity values
+    for y in range(inputHeight):
+        for x in range(inputWidth):
+            #Store pixel to avoid multiple accesses
+            pixel = inputImg[y][x]
+
+            #Calculate new value for each channel
+            newPix = (pixel - min) / rangePix
+            
+            #Save new values into image
+            outputImg[y][x] = newPix
+            
+    return outputImg
 
 #Function to normalize color channels between [0, 1] based on upper limit of dynamic range
 #Input: Three-channel image
@@ -82,17 +126,17 @@ def normalizeChannelsFull(inputImg):
                 
     #Declare array to hold output image
     outputImg = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    
+    #Calculate ranges for each color channel
+    rangeRed = maxRed - minRed
+    rangeGreen = maxGreen - minGreen
+    rangeBlue = maxBlue - minBlue
                 
     #Iterate through image and normalize intensity values for each channel
     for y in range(inputHeight):
         for x in range(inputWidth):
             #Store pixel to avoid multiple accesses
             pixel = inputImg[y][x]
-            
-            #Calculate ranges for each color channel
-            rangeRed = maxRed - minRed
-            rangeGreen = maxGreen - minGreen
-            rangeBlue = maxBlue - minBlue
             
             #Calculate new value for each channel
             newRed = (pixel[0] - minRed) / rangeRed
@@ -103,7 +147,11 @@ def normalizeChannelsFull(inputImg):
             outputImg[y][x] = [newRed, newGreen, newBlue]
             
     return outputImg
-            
+
+'''***************************************NORMALIZATION FUNCTIONS***************************************'''
+
+'''***************************************WHITE BALANCING FUNCTIONS**************************************'''
+       
 #Function to reconstruct color channel from information from the green channel
 #Primarily used for red
 #Input: Three-channel image, channel to reconstruct, alpha value to use
@@ -152,6 +200,9 @@ def grayWorld(inputImg):
     #Retun balanced image
     return grayworldImg
 
+'''***************************************************WHITE BALANCING FUNCTIONS************************************************'''
+
+'''***************************************************FUSION INPUT FUNCTIONS***************************************************'''
 #Function to produce sharpened image using unsharp masking in order to preserve details in fusion process
 #Input: Three-channel image, 2D kernel size, and sigma
 #Output: Sharpened three-channel image
@@ -173,11 +224,314 @@ def sharpenImage(inputImg, ksize, sigma):
     #Average input image with the results of the unsharp mask to produce sharpened image
     sharpedImg = (inputImg + diffImg) / 2
 
-    #Display output
-    fig, ax = plt.subplots()
-    ax.imshow(sharpedImg)
-    ax.plot()
-    plt.show()
+    #Return the sharpened image
+    return sharpedImg
+    
+#Function to perform gamma correction on given image
+#Input: Three-channel image and gamma value
+#Output: Gamma-corrected three-channel image
+def gammaCorrection(inputImg, gamma):
+    #Extract input size information
+    inputHeight, inputWidth = inputImg.shape[:2]
+    
+    #Declare array to hold gamma-corrected image
+    gammedImg = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    
+    #Perform gamma correction
+    gammedImg = inputImg ** gamma
+    
+    #Return gamma-corrected image
+    return gammedImg
+
+'''***************************************************FUSION INPUT FUNCTIONS***************************************************'''
+
+'''***************************************************FUSION WEIGHTS FUNCTIONS*************************************************'''
+
+#Function to determine saliency weights of each pixel in image
+#Input: Three-channel image and sigma value for Gaussian filter
+#Output: Array of saliency values for every pixel arranged in shape of input image
+def saliencyWeights(inputImg, sigma):
+    #Extract input size information
+    inputHeight, inputWidth = inputImg.shape[:2]
+    
+    #Declare arrays to hold gaussed image, distance from mean, and saliency weights
+    gaussedImgLab = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    meanDiffLab = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    saledImg = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    saledImgLab = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    saledImgNorm = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    saledImgGray = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    
+    #Convert input image to Lab color space
+    inputImgLab = color.rgb2lab(inputImg)
+    
+    #Determine mean vector by taking mean of each attribute
+    inputImgLabMean = np.zeros(3, dtype=np.float32)
+    inputImgLabMean[0] = np.mean(inputImgLab[:,:,0])
+    inputImgLabMean[1] = np.mean(inputImgLab[:,:,1])
+    inputImgLabMean[2] = np.mean(inputImgLab[:,:,2])
+    
+    #Convolve input image with Gaussian filter
+    gaussedImgLab = cv.GaussianBlur(inputImg, (5, 5), sigma)
+    
+    #Subtract gaussedImg from image mean
+    meanDiffLab = inputImgLabMean - gaussedImgLab
+    
+    #Calculate L2 norm for each pixel
+    saledImgLab = (meanDiffLab ** 2) ** (1/2)
+    
+    #Convert image back to RGB colorspace
+    saledImg = color.lab2rgb(saledImgLab)
+    
+    #Convert image to grayscale
+    saledImgGray = color.rgb2gray(saledImg)
+    
+    #Normalize image channels
+    saledImgNorm = normalizeSingleChannelFull(saledImgGray)
+    
+    #Return saliency values
+    return saledImgNorm
+    
+#Function to determine the saturation weight for each pixel
+#Input: Three-channel image
+#Output: Array of weights for each pixel by amount of saturation
+def saturationWeights(inputImg):
+    #Extract input size information
+    inputHeight, inputWidth = inputImg.shape[:2]
+    
+    #Declare arrays to hold luminance and saturation weights
+    lumImg = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    satImg = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    satImgNorm = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    
+    #Calculate luminance of every pixel
+    lumImg = .2126 * inputImg[:,:,0] + .7152 * inputImg[:,:,1] + .0722 * inputImg[:,:,2]
+
+    #Calculate saturation weights of every pixel
+    satImg = ((1 / 3) * ((inputImg[:,:,0] - lumImg[:,:]) ** 2 + (inputImg[:,:,1] - lumImg[:,:]) ** 2 + (inputImg[:,:,2] - lumImg[:,:]) ** 2)) ** .5
+
+    #Normalize saturation weights between [0,1]
+    satImgNorm = normalizeSingleChannelFull(satImg)
+    
+    #Return weight map
+    return satImgNorm
+
+#Function to obtain Laplacian contrast weight map by finding the absolute value of the luminance channel passed through a Laplacian filter
+#Input: 3-channel image and the low sigma for the DoG (high is 1.6 * low)
+#Output: Single-channel Laplacian contrast weight map
+def lapContrastWeights(inputImg, sigma):
+    #Extract input size information
+    inputHeight, inputWidth = inputImg.shape[:2]
+    
+    #Declare arrays to hold luminance, and the raw and normalized versions of the Laplacian contrast weights
+    lumImg = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    lapImg = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    lapImgNorm = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    
+    #Calculate luminance of every pixel
+    lumImg = .2126 * inputImg[:,:,0] + .7152 * inputImg[:,:,1] + .0722 * inputImg[:,:,2]
+    
+    #Apply DoG filter to estimate Laplacian
+    lapImg = filters.difference_of_gaussians(lumImg, sigma)
+    
+    #Normalize Laplacian contrast weights
+    lapImgNorm = normalizeSingleChannelFull(lapImg)
+    
+    #Return normalized Laplacian weights
+    return lapImgNorm
+
+#Function to merge weight maps
+#Input: Single-channel saturation, saliency, and Laplacian contrast weight maps, and delta normalization factor
+#Output: Single-channel merged weight map
+def mergeWeights(satImg, saledImg, lapImg, delta):
+    #Extract input size information
+    inputHeight, inputWidth = satImg.shape[:2]
+
+    #Declare arrays to hold luminance, and the raw and normalized versions of the Laplacian contrast weights
+    summedWeights = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    mergedWeights = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    
+    #Sum weights
+    summedWeights = satImg + saledImg + lapImg
+    
+    #Normalize weights on a pixel-by-pixel basis
+    mergedWeights = (summedWeights + delta) / (satImg + saledImg + lapImg + (3 * delta))
+    
+    #Return merged weight map
+    return mergedWeights
+
+'''***************************************************FUSION WEIGHTS FUNCTIONS*************************************************'''
+
+'''***************************************************MULTI-SCALE FUSION FUNCTIONS********************************************************'''
+
+#Function to compose Gaussian pyramid with maximum possible layers from input image
+#Input: Weight map, sigma for Gaussian filter
+#Output: Gaussian pyramid of downscaled versions of weight map
+def generateGaussianPyramid(inputImg, sigma = (2/3)):
+    #Generate Gaussian pyramid with maximum layers
+    gausPyramid = tuple(transform.pyramid_gaussian(inputImg, max_layer = -1, downscale = 2, sigma = sigma))
+
+    #Return both pyramids
+    return gausPyramid
+
+#Function to compose Laplacian pyramid with maximum possible layers from input image
+#Input: Three-channel image, sigma for filter
+#Output: Laplacian pyramid of downscaled versions of image
+def generateLaplacianPyramid(inputImg, sigma = (2/3)):
+    #Generate Laplacian pyramid with maximum layers
+    lapPyramid = tuple(transform.pyramid_laplacian(inputImg, max_layer = -1, downscale = 2, sigma = sigma, channel_axis = 2))
+
+    #Return both pyramids
+    return lapPyramid
+
+#Function to perform multi-scale fusion on the given pyramids
+#Input: Gaussian pyramids for the weight maps, and Laplacian pyramids for the input images
+#Output: Dehazed image
+def fusePyramids(gausPyramidSharp, lapPyramidSharp, gausPyramidGamma, lapPyramidGamma):
+    #Extract size of largest image in pyramid
+    inputHeight, inputWidth = gausPyramidSharp[0].shape[:2]
+    
+    #Extract number of layers in pyramid
+    pyramidLayers = len(gausPyramidSharp)
+    
+    #Declare array to hold the three-channel fused output for each pyramid layer
+    fusedPyramidLayers = np.zeros((inputHeight, inputWidth, 3, pyramidLayers), dtype=np.float32)
+    
+    #Multiply the Gaussian and Laplacian layers for each input at each layer, then sum and upscale to original image size
+    for i in range(pyramidLayers):
+        #Declare array to hold the three-channel fused output for each pyramid layer
+        sharpCombined = np.zeros((math.ceil(inputHeight / (2 ** i)), math.ceil(inputWidth / (2 ** i)), 3), dtype=np.float32)
+        gammaCombined = np.zeros((math.ceil(inputHeight / (2 ** i)), math.ceil(inputWidth / (2 ** i)), 3), dtype=np.float32)
+        
+        #Multiply weight map Gaussian and input Laplacian for each input for each color channel
+        sharpCombined[:,:,0] = gausPyramidSharp[i] * lapPyramidSharp[i][:,:,0]
+        sharpCombined[:,:,1] = gausPyramidSharp[i] * lapPyramidSharp[i][:,:,1]
+        sharpCombined[:,:,2] = gausPyramidSharp[i] * lapPyramidSharp[i][:,:,2]
+        
+        gammaCombined[:,:,0] = gausPyramidGamma[i] * lapPyramidGamma[i][:,:,0]
+        gammaCombined[:,:,1] = gausPyramidGamma[i] * lapPyramidGamma[i][:,:,1]
+        gammaCombined[:,:,2] = gausPyramidGamma[i] * lapPyramidGamma[i][:,:,2]
+        
+        #Sum combined values and resize to original image shape
+        fusedPyramidLayers[:,:,:,i] = transform.resize((sharpCombined + gammaCombined), (inputHeight, inputWidth, 3))
+    
+    #Return fused pyramid layers
+    return fusedPyramidLayers
+
+#Function to sum all layers of the fused pyramid
+#Input: Fused pyramid
+#Output: Dehazed image
+def mergePyramidLayers(fusedPyramidLayers):
+    #Extract size of largest image in pyramid
+    inputHeight, inputWidth = fusedPyramidLayers[:,:,:,0].shape[:2]
+    
+    #Extract number of layers in pyramid
+    numPyramidLayers = len(fusedPyramidLayers[0,0,0])
+    
+    #Declare array to hold final merged image
+    mergedImg = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    
+    #Iterate through pyramid layers and calculate sum
+    for i in range(numPyramidLayers):
+        mergedImg += fusedPyramidLayers[:,:,:,i]
+        
+    #Return merged layers
+    return mergedImg
+    
+'''***************************************************MULTI-SCALE FUSION FUNCTIONS********************************************************'''
+
+'''***************************************************PIPELINE ORCHESTRATION FUNCTIONS*****************************************'''
+
+#Function to perform white balancing process with red reconstruction
+#Input: Three-channel image and alpha value for red reconstruction
+#Output: White-balanced three-channel image
+def whiteBalance(inputImg, channel = 0, alpha = 1):
+    #Extract input size information
+    inputHeight, inputWidth = inputImg.shape[:2]
+
+    #Declare arrays to hold normalized, red-reconstructed, and post-gray-world images
+    inputImgNorm = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    inputImgRedRec = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    inputImgGrayWorld = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    
+    #Normalize pixel values between [0,1] based on upper limit of dynamic range
+    inputImgNorm = normalizeChannelsUpper(inputImg)
+    
+    #Reconstruct red channel from green values
+    inputImgRedRec = reconstructChannel(inputImgNorm, channel, alpha)
+    
+    #Apply gray world algorithm for white balancing
+    inputImgGrayWorld = grayWorld(inputImgRedRec)
+    
+    #Return white-balanced image
+    return inputImgGrayWorld
+
+#Function to generate inputs for fusion stage
+#Input: White-balanced three-channel image
+#Output: Gamma-corrected three-channel image and sharpened three-channel image
+def generateFusionInputs(inputImg, ksize = (5,5), sigma = 1, gamma = 2):
+    #Extract input size information
+    inputHeight, inputWidth = inputImg.shape[:2]
+
+    #Declare arrays to hold normalized, red-reconstructed, and post-gray-world images
+    inputGamma = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    inputSharped = np.zeros((inputHeight, inputWidth, 3), dtype=np.float32)
+    
+    #Sharpen input image
+    inputSharped = sharpenImage(inputImg, ksize, sigma)
+    
+    #Gamma-correct input image
+    inputGamma = gammaCorrection(inputImg, gamma)
+    
+    #Return results
+    return inputSharped, inputGamma
+
+#Function to generate merged weight map
+#Input: Three-channel image
+#Output: Merged saliency, saturation, and Laplacian contrast weight map
+def generateMergedWeightMap(inputImg, sigmaSal = 1, sigmaLap = 2, delta = .1):
+    #Extract input size information
+    inputHeight, inputWidth = inputImg.shape[:2]
+
+    #Declare arrays to hold saliency, saturation, Laplacian contrast, and merged weight maps
+    weightSat = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    weightSal = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    weightLap = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    weightMerged = np.zeros((inputHeight, inputWidth), dtype=np.float32)
+    
+    #Generate each weight map
+    weightSat = saturationWeights(inputImg)
+    weightSal = saliencyWeights(inputImg, sigmaSal)
+    weightLap = lapContrastWeights(inputImg, sigmaLap)
+    
+    #Merge weight maps
+    weightMerged = mergeWeights(weightSat, weightSal, weightLap, delta)
+    
+    #Return merged weight map
+    return weightMerged
+
+#Function to perfor multi-scale fusion of the inputs and their weight maps
+#Input: Inputs and weight maps
+#Output: Dehazed, fused image
+def multiscaleFusion(inputSharp, weightSharp, inputGamma, weightGamma):
+    #Generate Gaussian pyramids for each weight map
+    gausPyramidSharp = generateGaussianPyramid(weightSharp)
+    gausPyramidGamma = generateGaussianPyramid(weightGamma)
+    
+    #Generate Laplacian pyramids for each input
+    lapPyramidSharp = generateLaplacianPyramid(inputSharp)
+    lapPyramidGamma = generateLaplacianPyramid(inputGamma)
+    
+    #Combine each pyramid layer
+    fusedPyramids = fusePyramids(gausPyramidSharp, lapPyramidSharp, gausPyramidGamma, lapPyramidGamma)
+    
+    #Perform multi-scale fusion on pyramid layers
+    fusedImg = mergePyramidLayers(fusedPyramids)
+    
+    #Return fused (and therefore dehazed) image
+    return fusedImg
+
+'''***************************************************PIPELINE ORCHESTRATION FUNCTIONS*******************************************'''
 
 #Get paths for input and output files
 srcDir = os.path.dirname(os.path.abspath(__file__))
@@ -185,17 +539,20 @@ inPath = str(srcDir + '\\' + sys.argv[1])
 outPath = str(srcDir + '\\' + sys.argv[2])
 
 imgInput = plt.imread(inPath)
-imgNormed = normalizeChannelsUpper(imgInput)
-imgGrayNoRed = grayWorld(imgNormed)
-imgRed = reconstructChannel(imgNormed, 0, 1)
-imgGray = grayWorld(imgRed)
-sharpenImage(imgGray, (5, 5), 1)
+imgGray = whiteBalance(imgInput)
 
+inputSharped, inputGamma = generateFusionInputs(imgGray)
 
+weightSharp = generateMergedWeightMap(inputSharped)
+weightGamma = generateMergedWeightMap(inputGamma)
+
+fusedImg = multiscaleFusion(inputSharped, weightSharp, inputGamma, weightGamma)
+
+fusedImg = normalizeChannelsFull(fusedImg)
 
 fig, ax = plt.subplots()
-ax.imshow(imgGrayNoRed)
+ax.imshow(fusedImg)
 ax.plot()
 plt.show()
 
-img = plt.imsave(outPath, imgGray)
+img = plt.imsave(outPath, weightSharp)
