@@ -489,7 +489,7 @@ def generateFusionInputs(inputImg, ksize = (5,5), sigma = 1, gamma = 2):
 #Function to generate merged weight map
 #Input: Three-channel image
 #Output: Merged saliency, saturation, and Laplacian contrast weight map
-def generateMergedWeightMap(inputImg, sigmaSal = 1, sigmaLap = 2, delta = .1):
+def generateMergedWeightMap(inputImg, sigmaSal = 1, sigmaLap = 2, delta = .1, save = False, version = 'Sharp', outPath = None):
     #Extract input size information
     inputHeight, inputWidth = inputImg.shape[:2]
 
@@ -504,13 +504,19 @@ def generateMergedWeightMap(inputImg, sigmaSal = 1, sigmaLap = 2, delta = .1):
     weightSal = saliencyWeights(inputImg, sigmaSal)
     weightLap = lapContrastWeights(inputImg, sigmaLap)
     
+    #Save intermediate images if desired
+    if (save):
+        plt.imsave(outPath + version + 'SatMap.png', weightSat, cmap = 'gray')
+        plt.imsave(outPath + version + 'SalMap.png', weightSal, cmap = 'gray')
+        plt.imsave(outPath + version + 'LapMap.png', weightLap, cmap = 'gray')
+    
     #Merge weight maps
     weightMerged = mergeWeights(weightSat, weightSal, weightLap, delta)
     
     #Return merged weight map
     return weightMerged
 
-#Function to perfor multi-scale fusion of the inputs and their weight maps
+#Function to perform multi-scale fusion of the inputs and their weight maps
 #Input: Inputs and weight maps
 #Output: Dehazed, fused image
 def multiscaleFusion(inputSharp, weightSharp, inputGamma, weightGamma):
@@ -531,6 +537,41 @@ def multiscaleFusion(inputSharp, weightSharp, inputGamma, weightGamma):
     #Return fused (and therefore dehazed) image
     return fusedImg
 
+#Function to enhance image by running it through entire pipeline
+#Input: Input image and whether to save intermediate results
+#Output: White-balanced and dehazed image
+def enhanceImage(inputImg, save = False, outPath = None):
+    #Make directory to save output images
+    if (save):
+        os.mkdir(outPath)
+                
+    #White-balance input image
+    imgGrayWorld = whiteBalance(inputImg)
+    
+    #Generate fusion inputs
+    inputSharped, inputGamma = generateFusionInputs(imgGrayWorld)
+
+    #Generate merged weight maps for each input
+    weightSharp = generateMergedWeightMap(inputSharped, save = save, version = 'Sharp', outPath = outPath)
+    weightGamma = generateMergedWeightMap(inputGamma, save = save, version = 'Gamma', outPath = outPath)
+
+    #Fuse inputs and their weight maps
+    fusedImg = multiscaleFusion(inputSharped, weightSharp, inputGamma, weightGamma)
+
+    #Normalize fused image
+    resultImg = normalizeChannelsFull(fusedImg)
+    
+    #Save intermediate steps if desired
+    if (save):
+        plt.imsave(outPath + 'Sharp.png', inputSharped)
+        plt.imsave(outPath + 'SharpMergedMap.png', weightSharp, cmap = 'gray')
+        plt.imsave(outPath + 'Gamma.png', inputGamma)
+        plt.imsave(outPath + 'GammaMergedMap.png', weightGamma, cmap = 'gray')
+        plt.imsave(outPath + 'Enhanced.png', resultImg)
+        
+    #Return final image
+    return resultImg
+
 '''***************************************************PIPELINE ORCHESTRATION FUNCTIONS*******************************************'''
 
 #Get paths for input and output files
@@ -539,20 +580,10 @@ inPath = str(srcDir + '\\' + sys.argv[1])
 outPath = str(srcDir + '\\' + sys.argv[2])
 
 imgInput = plt.imread(inPath)
-imgGray = whiteBalance(imgInput)
 
-inputSharped, inputGamma = generateFusionInputs(imgGray)
-
-weightSharp = generateMergedWeightMap(inputSharped)
-weightGamma = generateMergedWeightMap(inputGamma)
-
-fusedImg = multiscaleFusion(inputSharped, weightSharp, inputGamma, weightGamma)
-
-fusedImg = normalizeChannelsFull(fusedImg)
+result = enhanceImage(imgInput, True, outPath)
 
 fig, ax = plt.subplots()
-ax.imshow(fusedImg)
+ax.imshow(result)
 ax.plot()
 plt.show()
-
-img = plt.imsave(outPath, weightSharp)
