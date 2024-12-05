@@ -12,8 +12,8 @@ def normalizeSingleChannelFull(inputImg):
     inputHeight, inputWidth = inputImg.shape[:2]
     
     #Declare variables to hold max and min of each channel
-    max = 0
-    min = 1
+    max = -10000
+    min = 10000
     
     #Iterate through image to find max
     for y in range(inputHeight):
@@ -28,7 +28,7 @@ def normalizeSingleChannelFull(inputImg):
             #Check if pixel intensity is less than min
             if (pixel < min):
                 min = pixel
-                
+                    
     #Declare array to hold output image
     outputImg = np.zeros((inputHeight, inputWidth), dtype=np.float32)
     
@@ -100,8 +100,8 @@ def normalizeChannelsFull(inputImg):
     inputHeight, inputWidth = inputImg.shape[:2]
     
     #Declare variables to hold max and min of each channel
-    maxRed, maxGreen, maxBlue = 0,0,0
-    minRed, minGreen, minBlue = 1,1,1
+    maxRed, maxGreen, maxBlue = -100,-100,-100
+    minRed, minGreen, minBlue = 100,100,100
     
     #Iterate through image to find max
     for y in range(inputHeight):
@@ -201,6 +201,54 @@ def grayWorld(inputImg):
     return grayworldImg
 
 '''***************************************************WHITE BALANCING FUNCTIONS************************************************'''
+
+'''***********************************************BACKGROUND RESTORATION FUNCTIONS*********************************************'''
+#Function to perform K-Means clustering on weight maps to detect and segment background pixels
+#Input: Laplacian weight maps of Gamma-Corrected and Sharpened images
+#Output: Binary mask of image background
+def maskBackground(inputImg, GammaLap, GammaSal, GammaSat, SharpLap, SharpSal, SharpSat, k = 3):
+    #Extract image size
+    imgHeight, imgWidth = inputImg.shape[:2]
+    
+    #Create array to hold variables for clustering
+    pixelData = np.zeros(((imgHeight * imgWidth), 9), dtype=np.float32)
+    
+    #Iterate through image and append values to each pixel
+    pixelCount = 0
+    for y in range(imgHeight):
+        for x in range(imgWidth):
+            pixelData[pixelCount][0] = GammaLap[y][x]
+            pixelData[pixelCount][1] = GammaSal[y][x]
+            pixelData[pixelCount][2] = GammaSat[y][x]
+            pixelData[pixelCount][3] = SharpLap[y][x]
+            pixelData[pixelCount][4] = SharpSal[y][x]
+            pixelData[pixelCount][5] = SharpSat[y][x]
+            pixelData[pixelCount][6] = inputImg[y][x][0]
+            pixelData[pixelCount][7] = inputImg[y][x][1]
+            pixelData[pixelCount][8] = inputImg[y][x][2]
+            
+            #Increment pixel
+            pixelCount += 1
+            
+    #Declare parameters for cv.kmeans
+    criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 100000, .000001)
+    
+    #Execute K-means clustering
+    returnData, labels, centers = cv.kmeans(pixelData, k, None, criteria, 10, cv.KMEANS_RANDOM_CENTERS)
+    
+    #Reshape labels to image dimensions
+    clusteredImg = labels.reshape((imgHeight, imgWidth))
+    
+    #Normalize segmented image
+    clusteredImgNorm = normalizeSingleChannelFull(clusteredImg)
+    
+    #Save clusters
+    plt.imsave(outPath + 'Clusters.png', clusteredImgNorm, cmap='gray')
+    
+    #Return result
+    return clusteredImgNorm
+
+'''***********************************************BACKGROUND RESTORATION FUNCTIONS*********************************************'''
 
 '''***************************************************FUSION INPUT FUNCTIONS***************************************************'''
 #Function to produce sharpened image using unsharp masking in order to preserve details in fusion process
@@ -355,7 +403,7 @@ def mergeWeights(satImg, saledImg, lapImg, delta):
     summedWeights = satImg + saledImg + lapImg
     
     #Normalize weights on a pixel-by-pixel basis
-    mergedWeights = (summedWeights + delta) / (satImg + saledImg + lapImg + (3 * delta))
+    mergedWeights = (summedWeights + delta) / (satImg + saledImg + lapImg + (3 * (3 + delta)))
     
     #Return merged weight map
     return mergedWeights
@@ -514,7 +562,7 @@ def generateMergedWeightMap(inputImg, sigmaSal = 1, sigmaLap = 2, delta = .1, sa
     weightMerged = mergeWeights(weightSat, weightSal, weightLap, delta)
     
     #Return merged weight map
-    return weightMerged
+    return weightMerged, weightSal, weightLap, weightSat
 
 #Function to perform multi-scale fusion of the inputs and their weight maps
 #Input: Inputs and weight maps
@@ -540,7 +588,7 @@ def multiscaleFusion(inputSharp, weightSharp, inputGamma, weightGamma):
 #Function to enhance image by running it through entire pipeline
 #Input: Input image and whether to save intermediate results
 #Output: White-balanced and dehazed image
-def enhanceImage(inputImg, save = False, outPath = None):
+def enhanceImage(inputImg, save = False, outPath = None, k = 3):
     #Make directory to save output images
     if (save):
         os.mkdir(outPath)
@@ -552,8 +600,11 @@ def enhanceImage(inputImg, save = False, outPath = None):
     inputSharped, inputGamma = generateFusionInputs(imgGrayWorld)
 
     #Generate merged weight maps for each input
-    weightSharp = generateMergedWeightMap(inputSharped, save = save, version = 'Sharp', outPath = outPath)
-    weightGamma = generateMergedWeightMap(inputGamma, save = save, version = 'Gamma', outPath = outPath)
+    weightSharp, sharpSal, sharpLap, sharpSat = generateMergedWeightMap(inputSharped, save = save, version = 'Sharp', outPath = outPath)
+    weightGamma, gammaSal, gammaLap, gammaSat = generateMergedWeightMap(inputGamma, save = save, version = 'Gamma', outPath = outPath)
+
+    #Extract background
+    maskBackground(inputImg, gammaLap, gammaSal, gammaSat, sharpLap, sharpSal, sharpSat, k)
 
     #Fuse inputs and their weight maps
     fusedImg = multiscaleFusion(inputSharped, weightSharp, inputGamma, weightGamma)
@@ -563,6 +614,8 @@ def enhanceImage(inputImg, save = False, outPath = None):
     
     #Save intermediate steps if desired
     if (save):
+        plt.imsave(outPath + 'Input.png', inputImg)
+        plt.imsave(outPath + 'GrayWorld.png', imgGrayWorld)
         plt.imsave(outPath + 'Sharp.png', inputSharped)
         plt.imsave(outPath + 'SharpMergedMap.png', weightSharp, cmap = 'gray')
         plt.imsave(outPath + 'Gamma.png', inputGamma)
@@ -582,8 +635,3 @@ outPath = str(srcDir + '\\' + sys.argv[2])
 imgInput = plt.imread(inPath)
 
 result = enhanceImage(imgInput, True, outPath)
-
-fig, ax = plt.subplots()
-ax.imshow(result)
-ax.plot()
-plt.show()
