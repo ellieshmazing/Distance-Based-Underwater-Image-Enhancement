@@ -242,11 +242,32 @@ def maskBackground(inputImg, GammaLap, GammaSal, GammaSat, SharpLap, SharpSal, S
     #Normalize segmented image
     clusteredImgNorm = normalizeSingleChannelFull(clusteredImg)
     
-    #Save clusters
-    plt.imsave(outPath + 'Clusters.png', clusteredImgNorm, cmap='gray')
-    
     #Return result
     return clusteredImgNorm
+
+#Function to restore the background of the image to its original color scheme
+#Input: Enhanced image, original image, clusters, and the cluster that represents the background
+#Output: Enhanced image with restored background
+def restoreBackground(inputImg, enhancedImg, clusterImg, bgCluster):
+    #Extract image size
+    imgHeight, imgWidth = inputImg.shape[:2]
+    
+    #Create array to hold restored image
+    bgRestoredImg = np.zeros((imgHeight, imgWidth, 4), dtype=np.float32)
+    
+    #Normalize input image to float range
+    inputImgNorm = normalizeChannelsFull(inputImg)
+    
+    #Add pixels to restored image based on cluster assignment
+    for y in range(imgHeight):
+        for x in range(imgWidth):
+            if (np.mean(clusterImg[y][x]) == bgCluster):
+                bgRestoredImg[y][x] = inputImg[y][x]
+            else:
+                bgRestoredImg[y][x] = enhancedImg[y][x]
+                
+    #Return image with background restored
+    return bgRestoredImg
 
 '''***********************************************BACKGROUND RESTORATION FUNCTIONS*********************************************'''
 
@@ -604,7 +625,7 @@ def enhanceImage(inputImg, save = False, outPath = None, k = 3):
     weightGamma, gammaSal, gammaLap, gammaSat = generateMergedWeightMap(inputGamma, save = save, version = 'Gamma', outPath = outPath)
 
     #Extract background
-    maskBackground(inputImg, gammaLap, gammaSal, gammaSat, sharpLap, sharpSal, sharpSat, k)
+    clusteredImg = maskBackground(inputImg, gammaLap, gammaSal, gammaSat, sharpLap, sharpSal, sharpSat, k)
 
     #Fuse inputs and their weight maps
     fusedImg = multiscaleFusion(inputSharped, weightSharp, inputGamma, weightGamma)
@@ -620,6 +641,7 @@ def enhanceImage(inputImg, save = False, outPath = None, k = 3):
         plt.imsave(outPath + 'SharpMergedMap.png', weightSharp, cmap = 'gray')
         plt.imsave(outPath + 'Gamma.png', inputGamma)
         plt.imsave(outPath + 'GammaMergedMap.png', weightGamma, cmap = 'gray')
+        plt.imsave(outPath + 'Clusters.png', clusteredImg, cmap='gray')
         plt.imsave(outPath + 'Enhanced.png', resultImg)
         
     #Return final image
@@ -628,10 +650,25 @@ def enhanceImage(inputImg, save = False, outPath = None, k = 3):
 '''***************************************************PIPELINE ORCHESTRATION FUNCTIONS*******************************************'''
 
 #Get paths for input and output files
+''' CODE FOR ENHANCEMENT
 srcDir = os.path.dirname(os.path.abspath(__file__))
 inPath = str(srcDir + '\\' + sys.argv[1])
 outPath = str(srcDir + '\\' + sys.argv[2])
 
 imgInput = plt.imread(inPath)
 
-result = enhanceImage(imgInput, True, outPath)
+result = enhanceImage(imgInput, True, outPath, 8)
+'''
+
+''' BACKGROUND RESTORATION CODE'''
+srcDir = os.path.dirname(os.path.abspath(__file__))
+inPath = str(srcDir + '\\' + sys.argv[1])
+clusterVal = float(sys.argv[2])
+
+imgInput = plt.imread(inPath + "Input.png")
+enhancedImg = plt.imread(inPath + "Enhanced.png")
+clusterImg = plt.imread(inPath + "Clusters.png")
+
+bgRestoredImg = restoreBackground(imgInput, enhancedImg, clusterImg, clusterVal)
+
+plt.imsave(inPath + 'BGRestored.png', bgRestoredImg)
