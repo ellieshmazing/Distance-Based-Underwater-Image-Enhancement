@@ -206,26 +206,23 @@ def grayWorld(inputImg):
 #Function to perform K-Means clustering on weight maps to detect and segment background pixels
 #Input: Laplacian weight maps of Gamma-Corrected and Sharpened images
 #Output: Binary mask of image background
-def maskBackground(inputImg, GammaLap, GammaSal, GammaSat, SharpLap, SharpSal, SharpSat, k = 3):
+def generateClusters(inputImg, GammaLap, GammaSal, GammaSat, SharpLap, SharpSal, SharpSat, k = 3):
     #Extract image size
     imgHeight, imgWidth = inputImg.shape[:2]
     
     #Create array to hold variables for clustering
-    pixelData = np.zeros(((imgHeight * imgWidth), 9), dtype=np.float32)
+    pixelData = np.zeros(((imgHeight * imgWidth), 6), dtype=np.float32)
     
     #Iterate through image and append values to each pixel
     pixelCount = 0
     for y in range(imgHeight):
         for x in range(imgWidth):
             pixelData[pixelCount][0] = GammaLap[y][x]
-            pixelData[pixelCount][1] = GammaSal[y][x]
-            pixelData[pixelCount][2] = GammaSat[y][x]
-            pixelData[pixelCount][3] = SharpLap[y][x]
-            pixelData[pixelCount][4] = SharpSal[y][x]
-            pixelData[pixelCount][5] = SharpSat[y][x]
-            pixelData[pixelCount][6] = inputImg[y][x][0]
-            pixelData[pixelCount][7] = inputImg[y][x][1]
-            pixelData[pixelCount][8] = inputImg[y][x][2]
+            pixelData[pixelCount][1] = SharpLap[y][x]
+            pixelData[pixelCount][2] = SharpSal[y][x]
+            pixelData[pixelCount][3] = GammaSal[y][x]
+            pixelData[pixelCount][4] = 15 * (inputImg[y][x][0] - 2 / 255)
+            pixelData[pixelCount][5] = y
             
             #Increment pixel
             pixelCount += 1
@@ -245,23 +242,49 @@ def maskBackground(inputImg, GammaLap, GammaSal, GammaSat, SharpLap, SharpSal, S
     #Return result
     return clusteredImgNorm
 
+#Function to generate background mask and a dilated version
+#Input: Result of K-means clustering and background cluster value
+#Output: Background mask and dilated background mask with distance transform
+def maskDilate(clusters, bgCluster):
+    imgHeight, imgWidth = clusters.shape[:2]
+    
+    bg = np.zeros((imgHeight, imgWidth), dtype=np.uint8)
+    bgDilated = np.zeros((imgHeight, imgWidth), dtype=int)
+    
+    #Add pixels to restored image based on cluster assignment
+    for y in range(imgHeight):
+        for x in range(imgWidth):
+            if (np.mean(clusters[y][x]) == bgCluster):
+                bg[y][x] = 1
+            else:
+                bg[y][x] = 0
+               
+    bgDilated = cv.dilate(bg, cv.getStructuringElement(cv.MORPH_RECT, (5,5)))
+    bgDilatedTrans = cv.distanceTransform(bgDilated, cv.DIST_L2, cv.DIST_MASK_PRECISE)
+    
+    for y in range(imgHeight):
+        for x in range(imgWidth):
+            if (bg[y][x] == 1):
+                bgDilatedTrans[y][x] = 0
+    
+    return bg, bgDilatedTrans
+
 #Function to restore the background of the image to its original color scheme
-#Input: Enhanced image, original image, clusters, and the cluster that represents the background
+#Input: Enhanced image, original image, background mask, and dilated background mask
 #Output: Enhanced image with restored background
-def restoreBackground(inputImg, enhancedImg, clusterImg, bgCluster):
+def restoreBackground(inputImg, enhancedImg, bg, bgDilated):
     #Extract image size
     imgHeight, imgWidth = inputImg.shape[:2]
     
     #Create array to hold restored image
     bgRestoredImg = np.zeros((imgHeight, imgWidth, 4), dtype=np.float32)
     
-    #Normalize input image to float range
-    inputImgNorm = normalizeChannelsFull(inputImg)
-    
     #Add pixels to restored image based on cluster assignment
     for y in range(imgHeight):
         for x in range(imgWidth):
-            if (np.mean(clusterImg[y][x]) == bgCluster):
+            if (bgDilated[y][x][0] != 0):
+                bgRestoredImg[y][x] = (inputImg[y][x] * bgDilated[y][x]) + (enhancedImg[y][x] * (1 - bgDilated[y][x]))
+            elif (bg[y][x][0] == 1):
                 bgRestoredImg[y][x] = inputImg[y][x]
             else:
                 bgRestoredImg[y][x] = enhancedImg[y][x]
@@ -533,12 +556,12 @@ def whiteBalance(inputImg, channel = 0, alpha = 1):
     inputImgGrayWorld = grayWorld(inputImgRedRec)
     
     #Return white-balanced image
-    return inputImgGrayWorld
+    return inputImgGrayWorld, inputImgRedRec
 
 #Function to generate inputs for fusion stage
 #Input: White-balanced three-channel image
 #Output: Gamma-corrected three-channel image and sharpened three-channel image
-def generateFusionInputs(inputImg, ksize = (5,5), sigma = 1, gamma = 2):
+def generateFusionInputs(inputImg, ksize = (5,5), sigma = 4, gamma = 2):
     #Extract input size information
     inputHeight, inputWidth = inputImg.shape[:2]
 
@@ -615,7 +638,7 @@ def enhanceImage(inputImg, save = False, outPath = None, k = 3):
         os.mkdir(outPath)
                 
     #White-balance input image
-    imgGrayWorld = whiteBalance(inputImg)
+    imgGrayWorld, imgRedReconstructed = whiteBalance(inputImg)
     
     #Generate fusion inputs
     inputSharped, inputGamma = generateFusionInputs(imgGrayWorld)
@@ -625,7 +648,7 @@ def enhanceImage(inputImg, save = False, outPath = None, k = 3):
     weightGamma, gammaSal, gammaLap, gammaSat = generateMergedWeightMap(inputGamma, save = save, version = 'Gamma', outPath = outPath)
 
     #Extract background
-    clusteredImg = maskBackground(inputImg, gammaLap, gammaSal, gammaSat, sharpLap, sharpSal, sharpSat, k)
+    clusteredImg = generateClusters(inputImg, gammaLap, gammaSal, gammaSat, sharpLap, sharpSal, sharpSat, k)
 
     #Fuse inputs and their weight maps
     fusedImg = multiscaleFusion(inputSharped, weightSharp, inputGamma, weightGamma)
@@ -636,6 +659,7 @@ def enhanceImage(inputImg, save = False, outPath = None, k = 3):
     #Save intermediate steps if desired
     if (save):
         plt.imsave(outPath + 'Input.png', inputImg)
+        plt.imsave(outPath + 'RedReconstructed.png', imgRedReconstructed)
         plt.imsave(outPath + 'GrayWorld.png', imgGrayWorld)
         plt.imsave(outPath + 'Sharp.png', inputSharped)
         plt.imsave(outPath + 'SharpMergedMap.png', weightSharp, cmap = 'gray')
@@ -650,25 +674,10 @@ def enhanceImage(inputImg, save = False, outPath = None, k = 3):
 '''***************************************************PIPELINE ORCHESTRATION FUNCTIONS*******************************************'''
 
 #Get paths for input and output files
-''' CODE FOR ENHANCEMENT
 srcDir = os.path.dirname(os.path.abspath(__file__))
 inPath = str(srcDir + '\\' + sys.argv[1])
 outPath = str(srcDir + '\\' + sys.argv[2])
 
 imgInput = plt.imread(inPath)
 
-result = enhanceImage(imgInput, True, outPath, 8)
-'''
-
-''' BACKGROUND RESTORATION CODE'''
-srcDir = os.path.dirname(os.path.abspath(__file__))
-inPath = str(srcDir + '\\' + sys.argv[1])
-clusterVal = float(sys.argv[2])
-
-imgInput = plt.imread(inPath + "Input.png")
-enhancedImg = plt.imread(inPath + "Enhanced.png")
-clusterImg = plt.imread(inPath + "Clusters.png")
-
-bgRestoredImg = restoreBackground(imgInput, enhancedImg, clusterImg, clusterVal)
-
-plt.imsave(inPath + 'BGRestored.png', bgRestoredImg)
+result = enhanceImage(imgInput, True, outPath, 3)
